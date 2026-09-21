@@ -1,0 +1,155 @@
+import { describe, expect, it } from "vitest";
+import type { Page } from "playwright-core";
+import type { ServerMsg, SiteId } from "@katsu-magi/shared";
+import { BusyError, Orchestrator } from "../src/orchestrator/Orchestrator.js";
+import { AdapterError, type AnswerChunk, type LlmSiteAdapter, type Readiness } from "../src/sites/types.js";
+
+const silentLog = { info() {}, warn() {}, error() {}, debug() {}, child() { return silentLog; } } as never;
+
+class FakeAdapter implements LlmSiteAdapter {
+  sent: string[] = [];
+  newConversations = 0;
+  constructor(
+    public readonly id: SiteId,
+    private readonly behaviour: (prompt: string, signal: AbortSignal) => AsyncIterable<AnswerChunk>,
+  ) {}
+  async attach(_page: Page) {}
+  async ensureReady(): Promise<Readiness> {
+    return { state: "ready" };
+  }
+  async newConversation() {
+    this.newConversations++;
+  }
+  send(prompt: string, signal: AbortSignal) {
+    this.sent.push(prompt);
+    return this.behaviour(prompt, signal);
+  }
+  async cancel() {}
+  conversationUrl() {
+    return undefined;
+  }
+}
+
+const fakeBrowser = {
+  isRunning: () => true,
+  isVisible: () => true,
+  getPage: async () => ({}) as Page,
+  bringToFront: async () => {},
+  setVisible: async () => {},
+  restart: async () => {},
+};
+
+const cfg = { sites: { chatgpt: { enabled: true }, gemini: { enabled: true }, claude: { enabled: true } } };
+
+async function* ok(text: string): AsyncIterable<AnswerChunk> {
+  yield { text: text.slice(0, 2), done: false };
+  yield { text, done: true };
+}
+
+function setup(adapters: LlmSiteAdapter[]) {
+  const map = new Map(adapters.map((a) => [a.id, a]));
+  const orch = new Orchestrator(map, fakeBrowser, cfg, silentLog);
+  const messages: ServerMsg[] = [];
+  orch.on("message", (m) => messages.push(m));
+  return { orch, messages };
+}
+
+describe("Orchestrator", () => {
+  it("fans out to all requested sites and streams answers", async () => {
+    const { orch, messages } = setup([
+      new FakeAdapter("chatgpt", () => ok("gpt answer")),
+      new FakeAdapter("claude", () => ok("claude answer")),
+    ]);
+    await orch.ask("r1", "hello", ["chatgpt", "claude"]);
+    const finals = messages.filter((m) => m.type === "answer" && m.done);
+    expect(finals.map((m) => (m.type === "answer" ? [m.site, m.text] : null)).sort()).toEqual([
+      ["chatgpt", "gpt answer"],
+      ["claude", "claude answer"],
+    ]);
+    expect(orch.snapshot().sites.chatgpt.status).toBe("done");
+    expect(orch.snapshot().busyRequestId).toBeUndefined();
+  });
+
+  it("a failing site does not block the others", async () => {
+    const { orch, messages } = setup([
+      new FakeAdapter("chatgpt", () => ok("fine")),
+      new FakeAdapter("gemini", async function* () {
+        throw new AdapterError("SELECTOR_NOT_FOUND", "gemini", "boom", { selectorKey: "sendButton" });
+      }),
+    ]);
+    await orch.ask("r1", "hello", ["chatgpt", "gemini"]);
+    expect(orch.snapshot().sites.chatgpt.status).toBe("done");
+    expect(orch.snapshot().sites.gemini.status).toBe("error");
+    expect(orch.snapshot().sites.gemini.message).toContain("selectors:check gemini");
+    const err = messages.find((m) => m.type === "error");
+    expect(err && err.type === "error" && err.selectorKey).toBe("sendButton");
+  });
+
+  it("maps login / rate-limit errors to their statuses and keeps partial text", async () => {
+    const { orch, messages } = setup([
+      new FakeAdapter("claude", async function* () {
+        throw new AdapterError("NEEDS_LOGIN", "claude", "login required");
+      }),
+      new FakeAdapter("gemini", async function* () {
+        yield { text: "part", done: false };
+        throw new AdapterError("RATE_LIMITED", "gemini", "limit", { partialText: "part" });
+      }),
+    ]);
+    await orch.ask("r1", "hello", ["claude", "gemini"]);
+    expect(orch.snapshot().sites.claude.status).toBe("needs-login");
+    expect(orch.snapshot().sites.gemini.status).toBe("rate-limited");
+    const partial = messages.find((m) => m.type === "answer" && m.site === "gemini" && m.done);
+    expect(partial && partial.type === "answer" && partial.text).toBe("part");
+  });
+
+  it("rejects a second request while one is in flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { orch } = setup([
+      new FakeAdapter("chatgpt", async function* () {
+        await gate;
+        yield { text: "late", done: true };
+      }),
+    ]);
+    const first = orch.ask("r1", "hello", ["chatgpt"]);
+    await expect(orch.ask("r2", "again", ["chatgpt"])).rejects.toBeInstanceOf(BusyError);
+    expect(orch.snapshot().busyRequestId).toBe("r1");
+    release();
+    await first;
+    expect(orch.isBusy()).toBe(false);
+  });
+
+  it("skips disabled sites", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    const gem = new FakeAdapter("gemini", () => ok("y"));
+    const { orch } = setup([gpt, gem]);
+    orch.setEnabled("gemini", false);
+    await orch.ask("r1", "hello", ["chatgpt", "gemini"]);
+    expect(gpt.sent).toEqual(["hello"]);
+    expect(gem.sent).toEqual([]);
+  });
+
+  it("cancel aborts the signal and the site returns to idle", async () => {
+    const { orch } = setup([
+      new FakeAdapter("chatgpt", async function* (_p, signal) {
+        yield { text: "a", done: false };
+        await new Promise<void>((r) => signal.addEventListener("abort", () => r(), { once: true }));
+        throw new AdapterError("CANCELLED", "chatgpt", "cancelled", { partialText: "a" });
+      }),
+    ]);
+    const run = orch.ask("r1", "hello", ["chatgpt"]);
+    await new Promise((r) => setTimeout(r, 10));
+    await orch.cancel("r1");
+    await run;
+    expect(orch.snapshot().sites.chatgpt.status).toBe("idle");
+  });
+
+  it("newConversation resets every enabled site", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    const cl = new FakeAdapter("claude", () => ok("y"));
+    const { orch } = setup([gpt, cl]);
+    await orch.newConversation();
+    expect(gpt.newConversations).toBe(1);
+    expect(cl.newConversations).toBe(1);
+  });
+});

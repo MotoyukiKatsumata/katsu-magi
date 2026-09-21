@@ -1,0 +1,25 @@
+{
+  "name": "katsu-magi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ask ChatGPT, Gemini and Claude at once through their official web UIs and compare the answers side by side.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.10.0",
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"pnpm --filter @katsu-magi/server dev\" \"pnpm --filter @katsu-magi/web dev\"",
+    "build": "pnpm --filter @katsu-magi/web build && pnpm --filter @katsu-magi/server build",
+    "postinstall": "node scripts/postinstall.mjs",
+    "start": "node packages/server/dist/index.js",
+    "katsu-magi": "pnpm --filter @katsu-magi/server cli --",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "typescript": "^5.9.0"
+  }
+}

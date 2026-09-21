@@ -1,0 +1,42 @@
+{
+  "urls": { "home": "https://chatgpt.com/", "newChat": "https://chatgpt.com/" },
+  "loginUrlPatterns": ["auth.openai.com", "chatgpt.com/auth", "auth0.openai.com"],
+  "input": [
+    "#prompt-textarea",
+    "div.ProseMirror[contenteditable='true']",
+    "textarea[data-testid='prompt-textarea']",
+    "#mobile-composer-prompt",
+    "textarea[name='prompt']"
+  ],
+  "sendButton": [
+    "[data-testid='send-button']",
+    "button[type='submit'][aria-label*='送信']",
+    "button[aria-label*='送信']",
+    "button[aria-label*='Send']"
+  ],
+  "stopButton": [
+    "[data-testid='stop-button']",
+    "button[aria-label*='停止']",
+    "button[aria-label*='Stop']"
+  ],
+  "assistantMessage": ["[data-message-author-role='assistant']"],
+  "messageBody": [".markdown", ".prose"],
+  "loginIndicator": [
+    "[data-testid='login-button']",
+    "button:has-text('ログイン')",
+    "a:has-text('ログイン')",
+    "button:has-text('Log in')",
+    "a:has-text('Log in')"
+  ],
+  "challengeIndicator": ["#challenge-form", "#challenge-running", "iframe[src*='challenges.cloudflare.com']"],
+  "rateLimitPatterns": [
+    "reached (your|the) .*limit",
+    "hit (your|the) .*limit",
+    "too many requests",
+    "usage cap",
+    "try again (later|in)",
+    "上限に達し",
+    "しばらくしてから"
+  ],
+  "stripFromHtml": ["button", "[data-testid*='copy']", ".sr-only", "[aria-hidden='true']"]
+}

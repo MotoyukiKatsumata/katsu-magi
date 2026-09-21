@@ -1,0 +1,20 @@
+{
+  "port": 5175,
+  "browser": {
+    "mode": "launch",
+    "userDataDir": "%LOCALAPPDATA%\\katsu-magi\\chrome-profile",
+    "cdpUrl": "http://127.0.0.1:9222",
+    "startMinimized": false
+  },
+  "sites": {
+    "chatgpt": { "enabled": true },
+    "gemini": { "enabled": true },
+    "claude": { "enabled": true }
+  },
+  "timeouts": {
+    "pollMs": 300,
+    "stableMs": 1500,
+    "firstTokenMs": 45000,
+    "generationMs": 240000
+  }
+}

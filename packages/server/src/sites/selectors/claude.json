@@ -1,0 +1,38 @@
+{
+  "urls": { "home": "https://claude.ai/new", "newChat": "https://claude.ai/new" },
+  "loginUrlPatterns": ["claude.ai/login", "claude.ai/magic-link"],
+  "input": ["[data-testid='chat-input']", "div.ProseMirror[contenteditable='true']", "fieldset div[contenteditable='true']"],
+  "sendButton": [
+    "button[data-testid='chat-input-send']",
+    "button[aria-label='メッセージを送信']",
+    "button[aria-label*='送信']",
+    "button[aria-label='Send message']",
+    "button[aria-label*='Send']"
+  ],
+  "stopButton": [
+    "button[aria-label*='停止']",
+    "button[aria-label='Stop response']",
+    "button[aria-label*='Stop']"
+  ],
+  "assistantMessage": ["div[data-is-streaming]", "[data-testid='assistant-message']"],
+  "messageBody": [".font-claude-message", ".font-claude-response", ".standard-markdown", ".prose"],
+  "loginIndicator": [
+    "[data-testid='login-with-google']",
+    "[data-testid='login-with-apple']",
+    "input[type='email']",
+    "button:has-text('Continue with Google')",
+    "button:has-text('Log in')"
+  ],
+  "challengeIndicator": ["#challenge-form", "#challenge-running", "iframe[src*='challenges.cloudflare.com']"],
+  "rateLimitPatterns": [
+    "reached (your|the) .*limit",
+    "out of (free )?messages",
+    "usage limit",
+    "too many requests",
+    "try again (later|in)",
+    "上限に達し",
+    "メッセージ数の上限"
+  ],
+  "stripFromHtml": ["button", "[aria-hidden='true']"],
+  "doneAttribute": { "attr": "data-is-streaming", "value": "false" }
+}

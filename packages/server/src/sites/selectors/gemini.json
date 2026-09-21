@@ -1,0 +1,67 @@
+{
+  "urls": {
+    "home": "https://gemini.google.com/app",
+    "newChat": "https://gemini.google.com/app"
+  },
+  "loginUrlPatterns": [
+    "accounts.google.com"
+  ],
+  "input": [
+    ".ql-editor[contenteditable='true']",
+    "rich-textarea div[contenteditable='true']",
+    "div[role='textbox'][aria-label*='プロンプト']",
+    "div[role='textbox'][aria-label*='prompt']"
+  ],
+  "sendButton": [
+    "button[aria-label='プロンプトを送信']",
+    "button[aria-label*='送信']",
+    "button[aria-label='Send message']",
+    "button[aria-label*='Send']",
+    "button.send-button"
+  ],
+  "stopButton": [
+    "button[aria-label*='停止']",
+    "button[aria-label='Stop response']",
+    "button[aria-label*='Stop']",
+    "button.stop-button"
+  ],
+  "assistantMessage": [
+    "model-response",
+    ".model-response-container",
+    "message-content"
+  ],
+  "messageBody": [
+    ".model-response-text",
+    "message-content",
+    ".markdown"
+  ],
+  "loginIndicator": [
+    "a[href*='accounts.google.com/ServiceLogin']",
+    "a[aria-label='ログイン']",
+    "a[aria-label='Sign in']",
+    "a:has-text('ログイン')",
+    "a:has-text('Sign in')"
+  ],
+  "challengeIndicator": [
+    "#captcha-form",
+    "iframe[src*='recaptcha']"
+  ],
+  "rateLimitPatterns": [
+    "reached (your|the) .*limit",
+    "too many requests",
+    "try again later",
+    "上限に達し",
+    "しばらくしてから"
+  ],
+  "stripFromHtml": [
+    "button",
+    ".response-footer",
+    "sources-carousel",
+    "sources-carousel-inline",
+    "message-actions",
+    "hallucination-disclaimer",
+    "[aria-hidden='true']",
+    ".mat-icon",
+    "mat-icon"
+  ]
+}
