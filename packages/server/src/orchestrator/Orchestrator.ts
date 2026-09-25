@@ -189,10 +189,29 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
     this.emit("message", this.snapshot());
   }
 
-  async ask(requestId: string, prompt: string, sites: SiteId[]): Promise<void> {
+  async ask(requestId: string, prompt: string, sites: SiteId[], resumeSessionId?: string): Promise<void> {
     if (this.inFlight) throw new BusyError(this.inFlight.requestId);
     const targets = sites.filter((s) => this.sites.get(s)?.enabled && this.adapters.has(s));
     if (targets.length === 0) return;
+
+    // Typing into a past conversation the user was only looking at: put the tabs back on it
+    // first, so the prompt continues that thread instead of whatever the tabs were showing.
+    if (resumeSessionId && resumeSessionId !== this.sessionId) {
+      const session = this.history?.get(resumeSessionId);
+      if (!session) {
+        // Never append to the wrong conversation just because the old one went missing.
+        this.emit("message", {
+          type: "error",
+          requestId,
+          code: "SESSION_NOT_FOUND",
+          message: "続ける会話が履歴に見つかりませんでした。送信を中止しました。",
+        });
+        return;
+      }
+      await this.resumeTabs(session);
+      this.sessionId = session.id;
+      this.emit("message", this.snapshot());
+    }
 
     const controller = new AbortController();
     this.inFlight = { requestId, controller };
@@ -271,6 +290,14 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
     if (!session || !resume) return { session, resumed: false };
     if (this.inFlight) throw new BusyError(this.inFlight.requestId);
 
+    await this.resumeTabs(session);
+    this.sessionId = id;
+    this.emit("message", this.snapshot());
+    return { session, resumed: true };
+  }
+
+  /** Point every enabled site's tab at this conversation. Sites with no stored URL start fresh. */
+  private async resumeTabs(session: Session): Promise<void> {
     await Promise.allSettled(
       this.enabledSites().map(async (site) => {
         const adapter = this.adapters.get(site);
@@ -285,9 +312,6 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
         }
       }),
     );
-    this.sessionId = id;
-    this.emit("message", this.snapshot());
-    return { session, resumed: true };
   }
 
   deleteSession(id: string): ServerMsg {

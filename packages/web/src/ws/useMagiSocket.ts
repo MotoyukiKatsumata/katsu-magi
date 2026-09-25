@@ -37,6 +37,11 @@ export function useMagiSocket(): MagiSocket {
         else console.warn("bad server message", parsed.error, ev.data);
       };
       ws.onclose = () => {
+        // A close event can arrive after a newer socket has taken over: React's development
+        // StrictMode mounts the app twice, so the first socket closes while the second is
+        // already live. Without this guard the stale close wipes the current socket and every
+        // later send silently queues forever.
+        if (socketRef.current !== ws) return;
         dispatch({ type: "connected", connected: false });
         socketRef.current = null;
         if (!disposed) {

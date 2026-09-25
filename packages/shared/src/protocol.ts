@@ -10,6 +10,11 @@ export const clientMsgSchema = z.discriminatedUnion("type", [
     requestId: z.string().min(1),
     text: z.string().min(1),
     sites: z.array(siteIdSchema).min(1),
+    /**
+     * Continue this stored conversation: the server puts every tab back on it before sending.
+     * Set while the user is looking at a past session, so typing into it just works.
+     */
+    resumeSessionId: z.string().min(1).optional(),
   }),
   z.object({ type: z.literal("cancel"), requestId: z.string().min(1) }),
   z.object({ type: z.literal("newConversation"), sites: z.array(siteIdSchema).optional() }),

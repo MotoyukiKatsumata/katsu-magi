@@ -208,6 +208,51 @@ describe("Orchestrator", () => {
     expect(orch.snapshot().sessionId).toBe(id);
   });
 
+  it("a prompt aimed at a past session moves the tabs there and continues it", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    gpt.url = "https://chatgpt.com/c/old";
+    const { orch, history } = setup([gpt]);
+
+    await orch.ask("r1", "古い話題", ["chatgpt"]);
+    const oldId = history.list()[0]!.id;
+    await orch.newConversation();
+    gpt.opened.length = 0;
+    gpt.url = "https://chatgpt.com/c/old";
+
+    // The user was only looking at the old conversation and typed into it.
+    await orch.ask("r2", "その続き", ["chatgpt"], oldId);
+
+    expect(gpt.opened).toEqual(["https://chatgpt.com/c/old"]);
+    expect(orch.snapshot().sessionId).toBe(oldId);
+    expect(history.list()).toHaveLength(1); // continued, not started anew
+    expect(history.get(oldId)!.turns.map((t) => t.prompt)).toEqual(["古い話題", "その続き"]);
+  });
+
+  it("does not move the tabs when the prompt targets the conversation already open", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    gpt.url = "https://chatgpt.com/c/cur";
+    const { orch, history } = setup([gpt]);
+
+    await orch.ask("r1", "話題", ["chatgpt"]);
+    const id = history.list()[0]!.id;
+    gpt.opened.length = 0;
+
+    await orch.ask("r2", "続き", ["chatgpt"], id);
+    expect(gpt.opened).toEqual([]);
+    expect(history.get(id)!.turns).toHaveLength(2);
+  });
+
+  it("refuses to send when the conversation to continue is gone", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    const { orch, messages } = setup([gpt]);
+
+    await orch.ask("r1", "続き", ["chatgpt"], "99999999-9999-4999-8999-999999999999");
+
+    expect(gpt.sent).toEqual([]); // nothing was written to the wrong conversation
+    const err = messages.find((m) => m.type === "error");
+    expect(err && err.type === "error" && err.code).toBe("SESSION_NOT_FOUND");
+  });
+
   it("opening a session without resuming leaves the tabs alone", async () => {
     const gpt = new FakeAdapter("chatgpt", () => ok("x"));
     gpt.url = "https://chatgpt.com/c/abc";

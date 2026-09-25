@@ -49,7 +49,7 @@ export function registerWebSocket(app: FastifyInstance, orch: Orchestrator, log:
           send(socket, orch.snapshot());
           return;
         case "prompt":
-          await orch.ask(msg.requestId, msg.text, msg.sites);
+          await orch.ask(msg.requestId, msg.text, msg.sites, msg.resumeSessionId);
           return;
         case "cancel":
           await orch.cancel(msg.requestId);

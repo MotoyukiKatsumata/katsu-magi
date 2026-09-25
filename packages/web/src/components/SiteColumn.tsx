@@ -8,6 +8,8 @@ interface Props {
   site: SiteId;
   state: SiteState;
   turns: Turn[];
+  /** Changes when the column is refilled with a different conversation. */
+  viewEpoch: number;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
   onRetry: () => void;
@@ -15,7 +17,7 @@ interface Props {
 
 const NEEDS_ACTION = new Set(["needs-login", "blocked", "error", "rate-limited"]);
 
-export function SiteColumn({ site, state, turns, busy, onToggle, onRetry }: Props) {
+export function SiteColumn({ site, state, viewEpoch, turns, busy, onToggle, onRetry }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const streaming = state.status === "streaming" || state.status === "typing";
@@ -26,6 +28,19 @@ export function SiteColumn({ site, state, turns, busy, onToggle, onRetry }: Prop
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, streaming]);
+
+  // A conversation was just loaded: show its newest exchange, not the top of the thread.
+  // Once more on the next frame, because markdown can still be settling into its final height.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const toBottom = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    toBottom();
+    const id = requestAnimationFrame(toBottom);
+    return () => cancelAnimationFrame(id);
+  }, [viewEpoch]);
 
   const lastAnswer = [...turns].reverse().find((t) => t.answers[site]?.text)?.answers[site]?.text;
 

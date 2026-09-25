@@ -7,6 +7,11 @@ describe("protocol schemas", () => {
     expect(clientMsgSchema.parse(msg)).toEqual(msg);
   });
 
+  it("accepts a prompt that continues a stored conversation", () => {
+    const msg = { type: "prompt", requestId: "r1", text: "続き", sites: ["chatgpt"], resumeSessionId: "abc" };
+    expect(clientMsgSchema.parse(msg)).toEqual(msg);
+  });
+
   it("rejects unknown site ids", () => {
     const msg = { type: "prompt", requestId: "r1", text: "hi", sites: ["bing"] };
     expect(() => clientMsgSchema.parse(msg)).toThrow();

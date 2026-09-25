@@ -26,6 +26,8 @@ export interface AppState {
   sessionId?: string;
   /** Set while looking at a past session that is not the active one; the prompt bar is off then. */
   viewingSessionId?: string;
+  /** Bumped whenever the columns are refilled wholesale, so they can jump to the newest turn. */
+  viewEpoch: number;
   /** Transient, non-site-specific error (BUSY, BAD_MESSAGE, ...). */
   notice?: string;
 }
@@ -43,6 +45,7 @@ export const initialState: AppState = {
   browser: { running: false, visible: true },
   turns: [],
   sessions: [],
+  viewEpoch: 0,
 };
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -63,7 +66,7 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case "clearTurns": {
-      const next = { ...state, turns: [] };
+      const next = { ...state, turns: [], viewEpoch: state.viewEpoch + 1 };
       delete next.viewingSessionId;
       return next;
     }
@@ -103,8 +106,11 @@ function applyServer(state: AppState, msg: ServerMsg): AppState {
         sites: Object.keys(t.answers) as SiteId[],
         answers: t.answers,
       }));
-      const next: AppState = { ...state, turns };
-      if (msg.resumed) {
+      const next: AppState = { ...state, turns, viewEpoch: state.viewEpoch + 1 };
+      // Opening the session the tabs are already on is not "looking at the past", so the prompt
+      // bar stays usable. That covers both "back to the current conversation" and clicking the
+      // active session in the sidebar.
+      if (msg.resumed || msg.session.id === state.sessionId) {
         next.sessionId = msg.session.id;
         delete next.viewingSessionId;
       } else {

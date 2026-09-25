@@ -39,20 +39,22 @@ export function App() {
   const onSend = (text: string) => {
     const requestId = crypto.randomUUID();
     dispatch({ type: "localPrompt", requestId, prompt: text, sites: enabled });
-    send({ type: "prompt", requestId, text, sites: enabled });
+    // Typing into a past conversation continues it: the server moves the tabs there first.
+    send({
+      type: "prompt",
+      requestId,
+      text,
+      sites: enabled,
+      ...(state.viewingSessionId ? { resumeSessionId: state.viewingSessionId } : {}),
+    });
   };
 
   const onCancel = () => {
     if (state.busyRequestId) send({ type: "cancel", requestId: state.busyRequestId });
   };
 
+  // No confirmation: the conversation stays in the history, so nothing is lost.
   const onNewConversation = () => {
-    if (
-      state.turns.length > 0 &&
-      !window.confirm("すべてのサイトで新しい会話を始めます。ここまでのやり取りは履歴に残ります。")
-    ) {
-      return;
-    }
     dispatch({ type: "clearTurns" });
     send({ type: "newConversation" });
   };
@@ -85,7 +87,7 @@ export function App() {
 
       {viewing && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-900 dark:border-indigo-900/50 dark:bg-indigo-950/40 dark:text-indigo-200">
-          <span className="flex-1">過去の会話を表示しています。続きから質問するには再開してください。</span>
+          <span className="flex-1">過去の会話を表示しています。ここで送信すると、この会話の続きになります。</span>
           <button
             type="button"
             disabled={busy}
@@ -123,6 +125,7 @@ export function App() {
                   site={site}
                   state={state.sites[site]}
                   turns={state.turns}
+                  viewEpoch={state.viewEpoch}
                   busy={busy}
                   onToggle={(on) => send({ type: "setSiteEnabled", site, enabled: on })}
                   onRetry={() => send({ type: "retry", site })}
@@ -134,7 +137,7 @@ export function App() {
         </main>
       </div>
 
-      <PromptBar busy={busy} disabled={enabled.length === 0 || !state.connected || viewing} onSend={onSend} onCancel={onCancel} />
+      <PromptBar busy={busy} disabled={enabled.length === 0 || !state.connected} onSend={onSend} onCancel={onCancel} />
     </div>
   );
 }
