@@ -4,6 +4,7 @@
 //     katsu-magi.cmd            double-click to start
 //     katsu-magi-cli.cmd        maintenance commands (selectors:check etc.)
 //     README.txt                for the recipient
+//     CHANGELOG.md              what changed in this version
 //     katsu-magi.config.json    editable settings
 //     selectors/*.json          editable site selectors (replace when a site changes its UI)
 //     node/node.exe             bundled Node.js runtime
@@ -111,9 +112,10 @@ if (!existsSync(nodeZip)) {
 }
 run(TAR, ["-xf", nodeZip, "-C", path.join(staging, "node"), "--strip-components=1", `node-${nodeVersion}-win-x64/node.exe`, `node-${nodeVersion}-win-x64/LICENSE`]);
 
-// 6. Editable files: selectors and config.
+// 6. Editable files: selectors and config, plus the changelog so recipients can see what changed.
 cpSync(path.join(root, "packages/server/src/sites/selectors"), path.join(staging, "selectors"), { recursive: true });
 cpSync(path.join(root, "katsu-magi.config.example.json"), path.join(staging, "katsu-magi.config.json"));
+cpSync(path.join(root, "CHANGELOG.md"), path.join(staging, "CHANGELOG.md"));
 
 // 7. Launchers.
 writeFileSync(
@@ -197,6 +199,7 @@ ChatGPT / Gemini / Claude の Web サイトに同じ質問を同時に送り、�
   再起動は不要で、次の送信から反映されます。
 - 「Chrome could not be started」: katsu-magi 用の Chrome が別に残っています。黒い窓を閉じ、タスクマネージャーで chrome.exe を終了してから再実行してください。
 - 設定（ポート番号、待ち時間など）は katsu-magi.config.json で変更できます。
+- この版で何が変わったかは CHANGELOG.md に書いてあります。
 
 注意
 ----

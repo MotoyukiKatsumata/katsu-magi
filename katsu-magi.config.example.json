@@ -11,10 +11,14 @@
     "gemini": { "enabled": true },
     "claude": { "enabled": true }
   },
+  "history": {
+    "enabled": true,
+    "resumeLastOnStart": true
+  },
   "timeouts": {
     "pollMs": 300,
     "stableMs": 1500,
-    "firstTokenMs": 45000,
-    "generationMs": 240000
+    "firstTokenMs": 120000,
+    "generationMs": 420000
   }
 }

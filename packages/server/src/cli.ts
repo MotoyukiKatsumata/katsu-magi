@@ -2,7 +2,7 @@
  * Maintenance CLI:  pnpm katsu-magi <command> [...]
  *
  *   login                                  open all sites in the katsu-magi Chrome profile and wait
- *   adapter:test <site> "<prompt>" [--new] [--then "<follow-up>"]
+ *   adapter:test <site> "<prompt>" [--new] [--then "<follow-up>"] [--debug]
  *   selectors:check <site>                 which selector candidates match on the live page
  *   selectors:probe <site>                 list editors / labelled buttons / custom elements on the live page
  *   selectors:dump <site>                  save the last assistant message HTML to test/fixtures
@@ -24,7 +24,7 @@ import { isAdapterError } from "./sites/types.js";
 function usage(): never {
   console.error(`usage:
   pnpm katsu-magi login
-  pnpm katsu-magi adapter:test <site> "<prompt>" [--new] [--then "<follow-up>"]
+  pnpm katsu-magi adapter:test <site> "<prompt>" [--new] [--then "<follow-up>"] [--debug]
   pnpm katsu-magi selectors:check <site>
   pnpm katsu-magi selectors:probe <site> [conversation-url]
   pnpm katsu-magi selectors:dump <site> [conversation-url]
@@ -272,8 +272,11 @@ async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     args,
     allowPositionals: true,
-    options: { new: { type: "boolean" }, then: { type: "string" } },
+    options: { new: { type: "boolean" }, then: { type: "string" }, debug: { type: "boolean" } },
   });
+  // --debug shows the per-poll observations from BaseAdapter (container found? still generating?
+  // tab throttled?), which is how a "no answer arrived" report gets diagnosed.
+  if (values.debug) logger.level = "debug";
   const [cmd, a, b] = positionals;
   switch (cmd) {
     case "login":

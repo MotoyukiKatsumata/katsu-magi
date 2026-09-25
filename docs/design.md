@@ -1,7 +1,7 @@
 # katsu-magi 設計書
 
-対象バージョン：0.1.0(フェーズ1)
-最終更新：2026-09-21
+対象バージョン：0.2.0(フェーズ1)
+最終更新：2026-09-24
 
 ## 1. この文書の位置づけ
 
@@ -51,20 +51,23 @@ flowchart TB
     subgraph web["packages/web(React + Vite + Tailwind)"]
         APP["App"]
         SOCK["useMagiSocket<br/>(再接続付き WebSocket)"]
-        RED["reducer<br/>(サイト状態 / ターン履歴)"]
+        RED["reducer<br/>(サイト状態 / ターン / セッション)"]
         COLW["useColumnWidths<br/>(カラム幅, localStorage)"]
+        HSB["HistorySidebar"]
     end
 
     subgraph shared["packages/shared"]
         PROTO["protocol.ts<br/>(zod スキーマ: ClientMsg / ServerMsg)"]
-        SITES["sites.ts<br/>(SiteId, ラベル)"]
+        SITES["sites.ts<br/>(SiteId, SiteStatus, ラベル)"]
+        HIST["history.ts<br/>(Session, StoredTurn のスキーマ)"]
     end
 
     subgraph server["packages/server(Node.js + Fastify + Playwright)"]
         HTTP["http.ts<br/>(Fastify, 静的配信, /api/health)"]
         WS["ws/handler.ts<br/>(/ws, メッセージ振り分け)"]
-        ORCH["orchestrator/Orchestrator<br/>(状態管理, 戦略実行)"]
+        ORCH["orchestrator/Orchestrator<br/>(状態管理, 戦略実行, セッション)"]
         FAN["strategies/fanout<br/>(同時送信)"]
+        HS["history/HistoryStore<br/>(会話履歴の読み書き)"]
         BM["browser/BrowserManager<br/>(Chrome 接続, タブ管理)"]
         CHR["browser/chrome.ts<br/>(spawn, 停止, 掃除)"]
         WIN["browser/window.ts<br/>(最小化 / 復帰)"]
@@ -84,8 +87,12 @@ flowchart TB
     APP --> SOCK --> WS
     APP --> RED
     APP --> COLW
+    APP --> HSB
     SOCK -. 型 .-> PROTO
     WS -. 型 .-> PROTO
+    PROTO -. 型 .-> HIST
+    ORCH --> HS
+    HS -. 型 .-> HIST
     WS --> ORCH --> FAN
     FAN --> A1 & A2 & A3
     A1 & A2 & A3 --> BASE
@@ -122,8 +129,9 @@ katsu-magi/
   docs/                           この文書と機能仕様書
   packages/
     shared/src/
-      sites.ts                    SiteId、表示名
+      sites.ts                    SiteId、表示名、SiteStatus(history と protocol の両方が使う)
       protocol.ts                 WebSocket メッセージの zod スキーマと型
+      history.ts                  セッション、ターン、要約の zod スキーマと型
     server/
       scripts/build.mjs           esbuild で dist/index.js と dist/cli.js を作る
       src/
@@ -133,8 +141,9 @@ katsu-magi/
         logger.ts                 pino
         http.ts                   Fastify の生成、静的配信
         ws/handler.ts             /ws の受信・配信
+        history/HistoryStore.ts   会話履歴の読み書き(7.3 節)
         orchestrator/
-          Orchestrator.ts         サイト状態、処理中管理、戦略の呼び出し
+          Orchestrator.ts         サイト状態、処理中管理、戦略の呼び出し、履歴セッション
           strategies/fanout.ts    同時送信(runOne はマギモードでも再利用する)
         browser/
           BrowserManager.ts       接続、タブの払い出し、停止、再起動
@@ -149,14 +158,14 @@ katsu-magi/
           registry.ts             SiteId からアダプタを作る
           GenerationWatcher.ts    完了判定
           html-to-markdown.ts     Turndown による変換
-      test/                       vitest(GenerationWatcher, Orchestrator, html-to-markdown)
+      test/                       vitest(GenerationWatcher, Orchestrator, HistoryStore, html-to-markdown)
     web/
       index.html, vite.config.ts  Vite(React, Tailwind プラグイン, /ws と /api のプロキシ)
       src/
         main.tsx, App.tsx, index.css
         ws/useMagiSocket.ts
         state/reducer.ts, state/useColumnWidths.ts
-        components/{Toolbar,PromptBar,SiteColumn,StatusBadge,Markdown,ResizeHandle}.tsx
+        components/{Toolbar,PromptBar,SiteColumn,StatusBadge,Markdown,ResizeHandle,HistorySidebar}.tsx
 ```
 
 ## 5. ブラウザ層
@@ -326,13 +335,13 @@ sequenceDiagram
     alt ログイン画面 / 確認画面
         A-->>O: throw AdapterError(NEEDS_LOGIN / BLOCKED)
     end
-    A->>P: 既存の回答メッセージ数 n を数える
+    A->>P: markExistingAnswers(): 既存の回答すべてに印を付ける
     A->>P: typePrompt(): 入力欄をクリック、全選択削除、insertText
     A->>P: submit(): 送信ボタンをクリック
-    A->>W: run(() => readAnswer(n), signal)
+    A->>W: run(() => readAnswer(), signal)
     loop pollMs ごと
-        W->>A: readAnswer(n)
-        A->>P: page.evaluate(1 回で text / html / generating / exists を取得)
+        W->>A: readAnswer()
+        A->>P: page.evaluate(1 回で exists / text / html / generating / visibility を取得)
         P-->>A: Reading
         A-->>W: Reading
         alt テキストが変化
@@ -347,8 +356,26 @@ sequenceDiagram
 
 `readAnswer` は、一回の `page.evaluate` で必要な情報をすべて取る。
 ポーリングのたびに複数回ブラウザと往復すると、その分だけ遅延と負荷が増えるためである。
-評価関数の中では、n+1 番目の回答コンテナを見つけ、本文要素の `innerText`(表示用)と、`stripFromHtml` の要素を取り除いた複製の `innerHTML`(変換用)を返す。
-生成中かどうかは、停止ボタンが画面上に描画されているか、`doneAttribute` があればその値で決める。
+評価関数の中では、対象の回答コンテナを見つけ、本文要素のテキスト(表示用)と、`stripFromHtml` の要素を取り除いた複製の `innerHTML`(変換用)を返す。
+生成中かどうかは、停止ボタンが表示されているか、`doneAttribute` があればその値で決める。
+
+対象の回答は**印で特定する**。
+送信の直前に既存の回答要素へ `data-katsu-magi-seen` を付け、以後は印の無い最後の要素を読む。
+位置番号(n+1 番目)では、Gemini が `infinite-scroller` で画面外の回答を DOM から外したときにずれて回答を見失う。
+印は要素と一緒に動くので影響を受けない。
+サイトが古い要素を作り直して印が消えた場合も、選ぶのは印の無いもののうち最後なので、今回の回答が選ばれる。
+
+**テキストと可視判定をレイアウトに依存させない**。
+`innerText` はレイアウトが計算されていないと空になるため、空なら `textContent` に落とす。
+停止ボタンの可視判定は、計算済みスタイルだけを見る `checkVisibility()` を優先し、使えない場合に `getClientRects()` を見る。
+候補セレクタは複数同時に一致しうるので、最初の一つではなく全件を調べる。
+
+**ページに渡す関数には名前を付けない**。
+esbuild の `keepNames` は名前付き関数に補助関数 `__name` を挿入するが、その定義はページ側に存在しないため実行時に失敗する。
+`page.evaluate` の中では無名の即時コールバックだけを使う。
+
+ポーリングの観測値は `debug` で記録する。
+`adapter:test --debug` で「器はできたか」「サイトはまだ生成中と言っているか」「タブは抑制されていないか」が並び、回答が届かないという報告はこの三つで切り分けられる。
 
 ### 6.4 完了判定
 
@@ -404,6 +431,12 @@ UI に届くすべての通知は、この層が `message` イベントとして
 - `newConversation(sites)`：各アダプタを新規チャットに移して状態判定する(F-07)
 - `retry(site)`：タブを取り直して状態判定する(F-11)
 - `setEnabled`、`setBrowserVisible`、`restartBrowser`
+- `listSessions()`、`openSession(id, resume)`、`deleteSession(id)`、`renameSession(id, title)`：履歴の操作(F-19)
+
+履歴のセッションも、この層が持つ。
+`ask` は、セッションが無ければ作り、実行中に各サイトの最終テキストと状態を集め、終了時に一つのターンとして書き出す。
+あわせて各アダプタの `conversationUrl()` を保存する。これが再開の手掛かりになる。
+`newConversation` はセッションを手放すので、次のプロンプトが新しいセッションを作る。
 
 ### 7.2 fanout 戦略
 
@@ -424,7 +457,47 @@ flowchart LR
 マギモードは、この `runOne` を使って検証ラウンドと統合ラウンドを回す戦略として、`strategies/magi.ts` に追加する予定である。
 `Orchestrator` 側の変更は、どの戦略を呼ぶかの分岐だけになる。
 
-### 7.3 エラーから状態への写像
+### 7.3 履歴の保存と再開
+
+`packages/server/src/history/HistoryStore.ts` が読み書きを受け持つ。
+
+- セッションごとに `dataDir()/history/<id>.json`、一覧用に `index.json`
+- 索引は速さのための控えである。読めなければセッションのファイルから作り直す。**真実はセッションのファイル側**に置く
+- 書き込みは一時ファイルに書いてから置き換える。途中で落ちても半端な JSON が残らない
+- 識別子は `randomUUID` だが、通信で受け取った値をそのままパスに使わない。36 文字の UUID の形でなければ拒む
+
+再開の流れを示す。
+
+```mermaid
+sequenceDiagram
+    participant UI
+    participant O as Orchestrator
+    participant H as HistoryStore
+    participant A as 各アダプタ
+
+    UI->>O: openSession(id, resume: true)
+    O->>H: get(id)
+    H-->>O: Session(conversationUrls を含む)
+    par 有効な各サイト
+        alt 保存された URL がある
+            O->>A: openConversation(url)
+        else 無い
+            O->>A: newConversation()
+        end
+        O->>A: ensureReady()
+    end
+    O->>O: このセッションを現在の会話にする
+    O-->>UI: state(sessionId 付き) と session
+```
+
+`openConversation` は、自分が担当するサイトのホスト名と一致する URL だけを開く。
+保存された値をそのまま開くと、別サイトのタブを別のサイトへ飛ばしうるからである。
+
+起動時の自動再開は `index.ts` が行う。
+最後のセッション識別子は `dataDir()/state.json` に持つ。
+**読み出しは最初の状態通知より前に済ませる**。起動直後の通知にはセッション識別子が無く、そのまま書き戻すと記録が消えるためである。
+
+### 7.4 エラーから状態への写像
 
 アダプタの `AdapterError.code` は、次のように `SiteStatus` に写す。
 
@@ -458,15 +531,21 @@ UI からサーバーへ(`ClientMsg`)：
 | retry | site | 状態判定のやり直し(F-11) |
 | setSiteEnabled | site, enabled | 有効/無効(F-08) |
 | browser | action: show / hide / restart | ブラウザ制御(F-12) |
+| listSessions | - | 履歴一覧を要求(F-19) |
+| openSession | id, resume | 参照、または再開(F-19) |
+| deleteSession | id | 履歴から削除 |
+| renameSession | id, title | 題名の変更 |
 
 サーバーから UI へ(`ServerMsg`)：
 
 | type | フィールド | 意味 |
 |---|---|---|
-| state | sites, browser, busyRequestId? | 全体の現在状態。接続時と、処理の開始・終了、有効/無効の変更時に送る |
+| state | sites, browser, busyRequestId?, sessionId? | 全体の現在状態。接続時と、処理の開始・終了、有効/無効の変更、セッションの切替時に送る |
 | siteStatus | site, status, message? | 一サイトの状態変化 |
 | answer | requestId, site, text, done | 回答の全文スナップショット |
 | error | site?, requestId?, code, message, selectorKey? | エラー。site 無しは全体のエラー(BUSY、不正メッセージ) |
+| sessions | items | 履歴の要約一覧。接続時と、履歴が変わるたびに全クライアントへ配信する |
+| session | session, resumed | `openSession` への応答。**要求したクライアントにだけ**返す。誰が何を見ているかは各クライアントの都合であり、再開によるタブの移動は `state` で全員に伝わる |
 
 ```mermaid
 sequenceDiagram
@@ -528,6 +607,7 @@ flowchart TB
     SOCK["useMagiSocket<br/>WebSocket ↔ dispatch"] --> RED["reducer(AppState)"]
     RED --> APP["App"]
     APP --> TB["Toolbar"]
+    APP --> HS["HistorySidebar"]
     APP --> COLS["SiteColumn ×3 + ResizeHandle ×2"]
     APP --> PB["PromptBar"]
     COLS --> SB["StatusBadge"]
@@ -536,6 +616,7 @@ flowchart TB
     TB -- "send(ClientMsg)" --> SOCK
     PB -- "send(prompt) + dispatch(localPrompt)" --> SOCK
     COLS -- "send(setSiteEnabled / retry)" --> SOCK
+    HS -- "send(openSession / delete / rename)" --> SOCK
 ```
 
 状態は一つの `useReducer` に集約する。
@@ -546,8 +627,11 @@ AppState = {
   sites: Record<SiteId, { enabled, status, message? }>
   browser: { running, visible }
   busyRequestId?: string
-  turns: Turn[]        // { requestId, prompt, sites, answers: { [site]: { text, status, error? } } }
-  notice?: string      // BUSY などの一時通知
+  turns: Turn[]            // { requestId, prompt, sites, answers: { [site]: { text, status, error? } } }
+  sessions: SessionSummary[]
+  sessionId?: string       // タブが乗っている会話。プロンプトはこれに続く
+  viewingSessionId?: string // 過去の会話を参照中。プロンプト欄は無効になる
+  notice?: string          // BUSY などの一時通知
 }
 ```
 
@@ -558,6 +642,10 @@ AppState = {
 プロンプト送信時は、サーバーへ送るのと同時に `localPrompt` アクションでターンを先に追加する。
 サーバーからの最初の応答を待たずに、利用者の入力が即座に画面に現れるようにするためである。
 `requestId` は UI 側で UUID を生成し、以後の `answer` と `error` をこのターンに結び付ける。
+
+`session` メッセージは `turns` をまるごと差し替える。
+`resumed` が真なら現在の会話になり、偽なら参照中として扱って帯を出し、プロンプト欄を無効にする。
+プロンプトを送るか、新しい会話を始めると参照中は解除される。
 
 ### 10.2 WebSocket の再接続
 
@@ -588,6 +676,8 @@ react-markdown は既定で生の HTML を描画しないため、サイトの�
 | 設定 | `katsu-magi.config.json`(または `KATSU_MAGI_CONFIG`) | 機能仕様書 F-17 |
 | セレクタ | 環境変数 `KATSU_MAGI_SELECTORS_DIR`、無ければ `packages/server/src/sites/selectors/*.json`、無ければバンドルに隣接する `selectors/` | 6.2 節。この順に探す。ポータブル版では起動用 cmd が環境変数で zip 最上位の `selectors/` を指す |
 | Chrome プロファイル | `%LOCALAPPDATA%\katsu-magi\chrome-profile` | ログイン情報、Cookie |
+| 会話履歴 | `%LOCALAPPDATA%\katsu-magi\history\` | セッションごとに 1 ファイルと索引(7.3 節) |
+| 最後のセッション | `%LOCALAPPDATA%\katsu-magi\state.json` | 起動時の自動再開に使う |
 | ログとスクリーンショット | `%LOCALAPPDATA%\katsu-magi\logs\` | 状態判定失敗、セレクタ不一致、初回タイムアウト時の画面 |
 | カラム幅 | ブラウザの localStorage(`katsu-magi.columnWidths.v1`) | 比率の配列 |
 
@@ -642,10 +732,10 @@ cmd 内の表示は英語のみにしている。cmd.exe はバッチファイ�
 
 | 層 | 方法 | 対象 |
 |---|---|---|
-| 単体 | vitest | GenerationWatcher(偽の時計で 5 ケース)、html-to-markdown(実サイト由来の HTML 断片)、Orchestrator(偽アダプタで並列、失敗の隔離、BUSY、キャンセル、無効サイト)、protocol スキーマ |
-| アダプタ | CLI `adapter:test` | 実サイトに対する送信、ストリーミング、Markdown、`--then` による会話継続 |
+| 単体 | vitest | GenerationWatcher(偽の時計。完了、停止ボタンのちらつき、初回タイムアウト、器が出た後は待ち続けること、生成タイムアウト、キャンセル)、html-to-markdown(実サイト由来の HTML 断片)、Orchestrator(偽アダプタで並列、失敗の隔離、BUSY、キャンセル、無効サイト、履歴への記録と再開)、HistoryStore(追記、一覧、削除、壊れた索引の復旧、識別子の検証)、protocol スキーマ |
+| アダプタ | CLI `adapter:test` | 実サイトに対する送信、ストリーミング、Markdown、`--then` による会話継続。`--debug` で毎回のポーリング結果を見る。Chrome の窓を最小化した状態でも行う |
 | セレクタ | CLI `selectors:check` / `selectors:probe` | 実サイトの画面との一致 |
-| 結合 | サーバーを起動し WebSocket でプロンプトを送る | 三サイト同時送信から回答受信まで(開発時に手動で実施) |
+| 結合 | サーバーを起動し WebSocket でプロンプトを送る | 三サイト同時送信から回答受信まで。サーバーを再起動しての自動再開と文脈の維持。履歴の参照、名前変更、削除(開発時に手動で実施) |
 | 配布物 | zip を別フォルダに解凍し、起動用 cmd から立ち上げる | 同梱 Node.js での起動、依存の解決、セレクタと設定の参照先、三サイトの状態判定(zip を作り直したときに手動で実施) |
 | UI | 手動 | 表示、ドラッグ、リンク、状態バッジ |
 
@@ -654,7 +744,8 @@ cmd 内の表示は英語のみにしている。cmd.exe はバッチファイ�
 
 ## 14. 既知の課題と拡張の方針
 
-- **履歴の永続化**：UI のターン履歴を再読み込みで失う。localStorage か、サーバー側での保存(会話 URL と合わせて)で復元できるようにする案がある
+- **複数の作業領域**：一つの katsu-magi は一つの会話しか持てない。別々の調べものを並行したい場合、`/ws?w=2` のように接続時にワークスペースを決め、サーバーがワークスペースごとに `Orchestrator` とタブ一式を持つ形にできる。個々のメッセージに識別子を足さずに済み、変更はサーバーの管理部分と UI の入口に収まる
+- **履歴の検索**：件数が増えると一覧から探しにくい。題名と本文の全文検索を足す余地がある
 - **サイトの追加**：`SITE_IDS` に ID を足し、セレクタ JSON とアダプタクラスを一つずつ書き、`registry.ts` に登録する。UI は `SITE_IDS` を基にカラムを描くので、そのまま増える
 - **マギモード**：`strategies/magi.ts` を追加し、独立回答、相互検証、統合の三段階を `runOne` で回す。UI には結論を示す四つ目の領域が要る
 - **プロセス終了時の後始末**：サーバーが強制終了されると Chrome が残る。次回起動時に掃除する対処を入れているが、終了と同時に Chrome を閉じる手段(ジョブオブジェクトなど)は Node からは扱いにくい

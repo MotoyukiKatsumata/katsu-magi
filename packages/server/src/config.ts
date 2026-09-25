@@ -24,12 +24,21 @@ export const configSchema = z.object({
       claude: siteConfigSchema.prefault({}),
     })
     .prefault({}),
+  history: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Put the tabs back on the last conversation when the server starts. */
+      resumeLastOnStart: z.boolean().default(true),
+    })
+    .prefault({}),
   timeouts: z
     .object({
       pollMs: z.number().int().positive().default(300),
       stableMs: z.number().int().positive().default(1500),
-      firstTokenMs: z.number().int().positive().default(45_000),
-      generationMs: z.number().int().positive().default(240_000),
+      // Generous: reasoning models can think for a minute before the first token, and a long
+      // answer with web search can run for several minutes.
+      firstTokenMs: z.number().int().positive().default(120_000),
+      generationMs: z.number().int().positive().default(420_000),
       readyMs: z.number().int().positive().default(15_000),
     })
     .prefault({}),

@@ -1,7 +1,18 @@
 import { EventEmitter } from "node:events";
-import { SITE_IDS, type ServerMsg, type SiteId, type SiteState, type SiteStatus, type StateMsg } from "@katsu-magi/shared";
+import {
+  SITE_IDS,
+  type ServerMsg,
+  type Session,
+  type SiteId,
+  type SiteState,
+  type SiteStatus,
+  type StateMsg,
+  type StoredAnswer,
+  type StoredTurn,
+} from "@katsu-magi/shared";
 import type { BrowserManager } from "../browser/BrowserManager.js";
 import type { Config } from "../config.js";
+import type { HistoryStore } from "../history/HistoryStore.js";
 import type { Logger } from "../logger.js";
 import { AdapterError, type LlmSiteAdapter } from "../sites/types.js";
 import { fanout } from "./strategies/fanout.js";
@@ -25,12 +36,15 @@ interface InFlight {
 export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
   private readonly sites = new Map<SiteId, SiteState>();
   private inFlight: InFlight | undefined;
+  /** The history session the tabs are on. Undefined until the next prompt starts a new one. */
+  private sessionId: string | undefined;
 
   constructor(
     private readonly adapters: Map<SiteId, LlmSiteAdapter>,
     private readonly browser: Pick<BrowserManager, "isRunning" | "isVisible" | "getPage" | "bringToFront" | "setVisible" | "restart">,
     cfg: Pick<Config, "sites">,
     private readonly log: Logger,
+    private readonly history?: HistoryStore,
   ) {
     super();
     for (const site of SITE_IDS) {
@@ -48,7 +62,12 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
       sites,
       browser: { running: this.browser.isRunning(), visible: this.browser.isVisible() },
       ...(this.inFlight ? { busyRequestId: this.inFlight.requestId } : {}),
+      ...(this.sessionId ? { sessionId: this.sessionId } : {}),
     };
+  }
+
+  currentSessionId(): string | undefined {
+    return this.sessionId;
   }
 
   isBusy(): boolean {
@@ -153,6 +172,8 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
 
   async newConversation(sites: SiteId[] = this.enabledSites()): Promise<void> {
     if (this.inFlight) throw new BusyError(this.inFlight.requestId);
+    // The next prompt starts a new history session.
+    this.sessionId = undefined;
     await Promise.allSettled(
       sites.map(async (site) => {
         const adapter = this.adapters.get(site);
@@ -165,6 +186,7 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
         }
       }),
     );
+    this.emit("message", this.snapshot());
   }
 
   async ask(requestId: string, prompt: string, sites: SiteId[]): Promise<void> {
@@ -174,18 +196,109 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
 
     const controller = new AbortController();
     this.inFlight = { requestId, controller };
+    if (this.history && !this.sessionId) this.sessionId = this.history.create(prompt).id;
     this.emit("message", this.snapshot());
+
+    // Collected while the sites run, then written to history as one turn.
+    const answers: Partial<Record<SiteId, StoredAnswer>> = {};
+    for (const site of targets) answers[site] = { text: "", status: "typing" };
 
     try {
       await fanout(targets, this.adapters, prompt, controller.signal, {
-        onStatus: (site, status) => this.setStatus(site, status),
-        onAnswer: (site, text, done) => this.emit("message", { type: "answer", requestId, site, text, done }),
-        onError: (site, err) => this.reportError(requestId, site, err),
+        onStatus: (site, status) => {
+          this.setStatus(site, status);
+          const a = answers[site];
+          if (a) a.status = status;
+        },
+        onAnswer: (site, text, done) => {
+          const a = answers[site];
+          if (a) {
+            a.text = text;
+            if (done) a.status = "done";
+          }
+          this.emit("message", { type: "answer", requestId, site, text, done });
+        },
+        onError: (site, err) => {
+          const a = answers[site];
+          if (a) a.error = err.message;
+          this.reportError(requestId, site, err);
+        },
       });
     } finally {
       this.inFlight = undefined;
+      this.saveTurn(requestId, prompt, targets, answers);
       this.emit("message", this.snapshot());
     }
+  }
+
+  /** Record the finished turn and where each site's conversation now lives (for resuming). */
+  private saveTurn(requestId: string, prompt: string, targets: SiteId[], answers: Partial<Record<SiteId, StoredAnswer>>): void {
+    if (!this.history || !this.sessionId) return;
+    try {
+      for (const site of targets) {
+        const a = answers[site];
+        // A site's live status is the truth at this point; a cancelled run shows as idle.
+        if (a) a.status = this.sites.get(site)?.status ?? a.status;
+      }
+      const turn: StoredTurn = { requestId, prompt, createdAt: new Date().toISOString(), answers };
+      this.history.appendTurn(this.sessionId, turn);
+
+      const urls: Partial<Record<SiteId, string>> = {};
+      for (const site of targets) {
+        const url = this.adapters.get(site)?.conversationUrl();
+        if (url) urls[site] = url;
+      }
+      if (Object.keys(urls).length > 0) this.history.setConversationUrls(this.sessionId, urls);
+      this.emit("message", { type: "sessions", items: this.history.list() });
+    } catch (err) {
+      this.log.warn({ err }, "history: could not save the turn");
+    }
+  }
+
+  // ------------------------------------------------------------------ history
+
+  listSessions(): ServerMsg {
+    return { type: "sessions", items: this.history?.list() ?? [] };
+  }
+
+  /**
+   * `resume: false` only returns the stored conversation for viewing.
+   * `resume: true` also navigates every site's tab back to that conversation, so the next
+   * prompt continues it. Sites with no stored URL fall back to a fresh chat.
+   */
+  async openSession(id: string, resume: boolean): Promise<{ session: Session | undefined; resumed: boolean }> {
+    const session = this.history?.get(id);
+    if (!session || !resume) return { session, resumed: false };
+    if (this.inFlight) throw new BusyError(this.inFlight.requestId);
+
+    await Promise.allSettled(
+      this.enabledSites().map(async (site) => {
+        const adapter = this.adapters.get(site);
+        if (!adapter) return;
+        const url = session.conversationUrls[site];
+        try {
+          if (url) await adapter.openConversation(url);
+          else await adapter.newConversation();
+          await this.probe(site);
+        } catch (err) {
+          this.setStatus(site, "error", `過去の会話を開けませんでした: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }),
+    );
+    this.sessionId = id;
+    this.emit("message", this.snapshot());
+    return { session, resumed: true };
+  }
+
+  deleteSession(id: string): ServerMsg {
+    this.history?.remove(id);
+    if (this.sessionId === id) this.sessionId = undefined;
+    return this.listSessions();
+  }
+
+  renameSession(id: string, title: string): ServerMsg {
+    this.history?.rename(id, title);
+    return this.listSessions();
   }
 
   async cancel(requestId: string): Promise<void> {

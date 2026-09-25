@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { Page } from "playwright-core";
 import type { ServerMsg, SiteId } from "@katsu-magi/shared";
+import { HistoryStore } from "../src/history/HistoryStore.js";
 import { BusyError, Orchestrator } from "../src/orchestrator/Orchestrator.js";
 import { AdapterError, type AnswerChunk, type LlmSiteAdapter, type Readiness } from "../src/sites/types.js";
 
@@ -8,6 +12,7 @@ const silentLog = { info() {}, warn() {}, error() {}, debug() {}, child() { retu
 
 class FakeAdapter implements LlmSiteAdapter {
   sent: string[] = [];
+  opened: string[] = [];
   newConversations = 0;
   constructor(
     public readonly id: SiteId,
@@ -20,13 +25,17 @@ class FakeAdapter implements LlmSiteAdapter {
   async newConversation() {
     this.newConversations++;
   }
+  async openConversation(url: string) {
+    this.opened.push(url);
+  }
   send(prompt: string, signal: AbortSignal) {
     this.sent.push(prompt);
     return this.behaviour(prompt, signal);
   }
   async cancel() {}
+  url: string | undefined;
   conversationUrl() {
-    return undefined;
+    return this.url;
   }
 }
 
@@ -46,12 +55,20 @@ async function* ok(text: string): AsyncIterable<AnswerChunk> {
   yield { text, done: true };
 }
 
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const d of tempDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
 function setup(adapters: LlmSiteAdapter[]) {
   const map = new Map(adapters.map((a) => [a.id, a]));
-  const orch = new Orchestrator(map, fakeBrowser, cfg, silentLog);
+  const dir = mkdtempSync(path.join(tmpdir(), "katsu-orch-"));
+  tempDirs.push(dir);
+  const history = new HistoryStore(dir, silentLog);
+  const orch = new Orchestrator(map, fakeBrowser, cfg, silentLog, history);
   const messages: ServerMsg[] = [];
   orch.on("message", (m) => messages.push(m));
-  return { orch, messages };
+  return { orch, messages, history };
 }
 
 describe("Orchestrator", () => {
@@ -142,6 +159,76 @@ describe("Orchestrator", () => {
     await orch.cancel("r1");
     await run;
     expect(orch.snapshot().sites.chatgpt.status).toBe("idle");
+  });
+
+  it("records each turn and the conversation urls in history", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("gpt says"));
+    gpt.url = "https://chatgpt.com/c/abc";
+    const { orch, history } = setup([gpt]);
+
+    await orch.ask("r1", "first question", ["chatgpt"]);
+    await orch.ask("r2", "second question", ["chatgpt"]);
+
+    const sessions = history.list();
+    expect(sessions).toHaveLength(1);
+    const session = history.get(sessions[0]!.id)!;
+    expect(session.turns.map((t) => t.prompt)).toEqual(["first question", "second question"]);
+    expect(session.turns[0]!.answers.chatgpt).toMatchObject({ text: "gpt says", status: "done" });
+    expect(session.title).toBe("first question");
+    expect(session.conversationUrls.chatgpt).toBe("https://chatgpt.com/c/abc");
+    expect(orch.snapshot().sessionId).toBe(sessions[0]!.id);
+  });
+
+  it("starts a new history session after newConversation", async () => {
+    const { orch, history } = setup([new FakeAdapter("chatgpt", () => ok("x"))]);
+    await orch.ask("r1", "topic one", ["chatgpt"]);
+    await orch.newConversation();
+    expect(orch.snapshot().sessionId).toBeUndefined();
+    await orch.ask("r2", "topic two", ["chatgpt"]);
+    expect(history.list().map((s) => s.title).sort()).toEqual(["topic one", "topic two"]);
+  });
+
+  it("resuming a session sends every tab back to its stored conversation", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    gpt.url = "https://chatgpt.com/c/abc";
+    const claude = new FakeAdapter("claude", () => ok("y")); // no url: falls back to a new chat
+    const { orch, history } = setup([gpt, claude]);
+
+    await orch.ask("r1", "the old topic", ["chatgpt", "claude"]);
+    const id = history.list()[0]!.id;
+    await orch.newConversation();
+    gpt.opened.length = 0;
+    claude.newConversations = 0;
+
+    const { session, resumed } = await orch.openSession(id, true);
+    expect(resumed).toBe(true);
+    expect(session!.turns[0]!.prompt).toBe("the old topic");
+    expect(gpt.opened).toEqual(["https://chatgpt.com/c/abc"]);
+    expect(claude.newConversations).toBe(1);
+    expect(orch.snapshot().sessionId).toBe(id);
+  });
+
+  it("opening a session without resuming leaves the tabs alone", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    gpt.url = "https://chatgpt.com/c/abc";
+    const { orch, history } = setup([gpt]);
+    await orch.ask("r1", "old", ["chatgpt"]);
+    const id = history.list()[0]!.id;
+    gpt.opened.length = 0;
+
+    const { session, resumed } = await orch.openSession(id, false);
+    expect(resumed).toBe(false);
+    expect(session!.turns).toHaveLength(1);
+    expect(gpt.opened).toEqual([]);
+  });
+
+  it("deleting the active session clears it", async () => {
+    const { orch, history } = setup([new FakeAdapter("chatgpt", () => ok("x"))]);
+    await orch.ask("r1", "old", ["chatgpt"]);
+    const id = history.list()[0]!.id;
+    orch.deleteSession(id);
+    expect(history.list()).toEqual([]);
+    expect(orch.snapshot().sessionId).toBeUndefined();
   });
 
   it("newConversation resets every enabled site", async () => {

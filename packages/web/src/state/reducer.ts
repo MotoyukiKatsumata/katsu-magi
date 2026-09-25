@@ -1,9 +1,10 @@
-import { SITE_IDS, type ServerMsg, type SiteId, type SiteState, type SiteStatus } from "@katsu-magi/shared";
+import { SITE_IDS, type ServerMsg, type SessionSummary, type SiteId, type SiteState, type SiteStatus } from "@katsu-magi/shared";
 
 export interface Answer {
   text: string;
   status: SiteStatus;
-  error?: string;
+  /** `| undefined` so a StoredAnswer from history assigns cleanly under exactOptionalPropertyTypes. */
+  error?: string | undefined;
 }
 
 export interface Turn {
@@ -19,6 +20,12 @@ export interface AppState {
   browser: { running: boolean; visible: boolean };
   busyRequestId?: string;
   turns: Turn[];
+  /** History sessions, newest first. */
+  sessions: SessionSummary[];
+  /** The session the tabs are on. Prompts continue this one. */
+  sessionId?: string;
+  /** Set while looking at a past session that is not the active one; the prompt bar is off then. */
+  viewingSessionId?: string;
   /** Transient, non-site-specific error (BUSY, BAD_MESSAGE, ...). */
   notice?: string;
 }
@@ -35,6 +42,7 @@ export const initialState: AppState = {
   sites: Object.fromEntries(SITE_IDS.map((id) => [id, { enabled: true, status: "starting" }])) as Record<SiteId, SiteState>,
   browser: { running: false, visible: true },
   turns: [],
+  sessions: [],
 };
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -49,11 +57,16 @@ export function reducer(state: AppState, action: Action): AppState {
         sites: action.sites,
         answers: Object.fromEntries(action.sites.map((s) => [s, { text: "", status: "typing" as SiteStatus }])),
       };
-      return { ...state, turns: [...state.turns, turn] };
+      const next = { ...state, turns: [...state.turns, turn] };
+      delete next.viewingSessionId;
+      return next;
     }
 
-    case "clearTurns":
-      return { ...state, turns: [] };
+    case "clearTurns": {
+      const next = { ...state, turns: [] };
+      delete next.viewingSessionId;
+      return next;
+    }
 
     case "dismissNotice": {
       const { notice: _n, ...rest } = state;
@@ -68,10 +81,35 @@ export function reducer(state: AppState, action: Action): AppState {
 function applyServer(state: AppState, msg: ServerMsg): AppState {
   switch (msg.type) {
     case "state": {
-      const { busyRequestId, ...rest } = msg;
+      const { busyRequestId, sessionId, ...rest } = msg;
       const next: AppState = { ...state, sites: rest.sites, browser: rest.browser };
       if (busyRequestId) next.busyRequestId = busyRequestId;
       else delete next.busyRequestId;
+      if (sessionId) next.sessionId = sessionId;
+      else delete next.sessionId;
+      return next;
+    }
+
+    case "sessions":
+      return { ...state, sessions: msg.items };
+
+    case "session": {
+      if (!msg.session) return { ...state, notice: "その会話は見つかりませんでした。" };
+      // Stored turns replace what the columns show. Resuming also makes it the active session,
+      // so the prompt bar stays usable; plain viewing switches the UI into read-only mode.
+      const turns: Turn[] = msg.session.turns.map((t) => ({
+        requestId: t.requestId,
+        prompt: t.prompt,
+        sites: Object.keys(t.answers) as SiteId[],
+        answers: t.answers,
+      }));
+      const next: AppState = { ...state, turns };
+      if (msg.resumed) {
+        next.sessionId = msg.session.id;
+        delete next.viewingSessionId;
+      } else {
+        next.viewingSessionId = msg.session.id;
+      }
       return next;
     }
 

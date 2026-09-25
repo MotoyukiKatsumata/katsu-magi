@@ -9,6 +9,9 @@ import { htmlToMarkdown } from "./html-to-markdown.js";
 import { loadSelectors, type SelectorKey, type SiteSelectors } from "./selectors.js";
 import { AdapterError, type AnswerChunk, type LlmSiteAdapter, type Readiness, type Reading } from "./types.js";
 
+/** Marks answers that were already on the page before the current prompt was sent. */
+const SEEN_ATTR = "data-katsu-magi-seen";
+
 /**
  * Implements the whole send / watch / extract flow once. Site classes only override hooks
  * (and most differences live in the selector JSON, not in code).
@@ -88,6 +91,17 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
     await this.locatorFor("input").first().waitFor({ state: "visible", timeout: this.timeouts.readyMs }).catch(() => undefined);
   }
 
+  async openConversation(url: string): Promise<void> {
+    this.assertPageOpen();
+    this.reloadSelectors();
+    // Only ever navigate within the site this adapter owns.
+    if (new URL(url).hostname !== new URL(this.sel.urls.home).hostname) {
+      throw new Error(`refusing to open ${url} in the ${this.id} tab`);
+    }
+    await this.goto(url);
+    await this.locatorFor("input").first().waitFor({ state: "visible", timeout: this.timeouts.readyMs }).catch(() => undefined);
+  }
+
   async cancel(): Promise<void> {
     if (!this.page || this.page.isClosed()) return;
     const stop = this.locatorFor("stopButton").first();
@@ -112,14 +126,29 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
     if (ready.state === "needs-login") throw new AdapterError("NEEDS_LOGIN", this.id, "login required", { url: ready.url });
     if (ready.state === "blocked") throw new AdapterError("BLOCKED", this.id, `blocked (${ready.reason})`, { url: ready.url });
 
-    const before = await this.countAssistant();
+    const before = await this.markExistingAnswers();
     await this.typePrompt(prompt);
     await this.submit();
     this.log.debug({ site: this.id, before }, "prompt submitted");
 
     let lastText = "";
+    let lastReading: Reading | undefined;
+    const started = Date.now();
+    // Every poll is logged at debug level: `adapter:test --debug` shows whether the answer
+    // container was found, whether the site still reports "generating", and whether the tab
+    // was throttled - the three things that explain a missing answer.
+    const read = async (): Promise<Reading> => {
+      const r = await this.readAnswer();
+      lastReading = r;
+      this.log.debug(
+        { site: this.id, s: ((Date.now() - started) / 1000).toFixed(1), exists: r.exists, generating: r.generating, len: r.text.length, tab: r.visibility },
+        "poll",
+      );
+      return r;
+    };
+
     try {
-      for await (const snap of this.watcher.run(() => this.readAnswer(before), signal)) {
+      for await (const snap of this.watcher.run(read, signal)) {
         lastText = snap.text;
         if (!snap.done) {
           yield { text: snap.text, done: false };
@@ -127,6 +156,7 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
         }
         const markdown = this.toMarkdown(snap.html, snap.text);
         if (snap.outcome === "timeout-generation") {
+          this.log.warn({ site: this.id, reading: lastReading }, "generation timed out");
           throw new AdapterError("TIMEOUT_GENERATION", this.id, "generation did not finish in time", { partialText: markdown });
         }
         yield { text: markdown, done: true };
@@ -140,6 +170,7 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
       if (err instanceof FirstTokenTimeoutError) {
         const limit = await this.detectRateLimit();
         if (limit) throw new AdapterError("RATE_LIMITED", this.id, limit);
+        this.log.warn({ site: this.id, reading: lastReading }, "no answer container appeared");
         throw new AdapterError("TIMEOUT_FIRST_TOKEN", this.id, "no answer appeared", {
           url: this.page.url(),
           screenshot: await this.screenshot("first-token"),
@@ -171,14 +202,28 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
     await button.click({ timeout: 5_000 });
   }
 
-  protected async countAssistant(): Promise<number> {
-    const sel = await this.firstMatching("assistantMessage");
-    if (!sel) return 0;
-    return this.page.locator(sel).count();
+  /**
+   * Tag every answer already on the page, so the new one can be found as "the last untagged".
+   *
+   * Positional indexing (the n+1th message) breaks on sites that virtualise their message list:
+   * Gemini drops off-screen answers from the DOM, which shifts every index. A tag travels with
+   * the element instead. If the site re-creates an old element it loses its tag, but the answer
+   * is still the *last* untagged one in document order, so the choice stays correct.
+   */
+  protected async markExistingAnswers(): Promise<number> {
+    const msgSel = (await this.firstMatching("assistantMessage")) ?? this.sel.assistantMessage.join(", ");
+    return this.page.evaluate(
+      ({ msgSel, attr }) => {
+        const all = document.querySelectorAll(msgSel);
+        all.forEach((el) => el.setAttribute(attr, "1"));
+        return all.length;
+      },
+      { msgSel, attr: SEEN_ATTR },
+    );
   }
 
   /** One page.evaluate per poll: cheaper than several round-trips. */
-  protected async readAnswer(index: number): Promise<Reading> {
+  protected async readAnswer(): Promise<Reading> {
     const msgSel = (await this.firstMatching("assistantMessage")) ?? this.sel.assistantMessage.join(", ");
     const bodySel = this.sel.messageBody.join(", ");
     const stopSel = this.sel.stopButton.join(", ");
@@ -186,15 +231,27 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
     const doneAttr = this.sel.doneAttribute ?? null;
 
     return this.page.evaluate(
-      ({ msgSel, bodySel, stopSel, stripSel, doneAttr, index }) => {
-        const messages = document.querySelectorAll(msgSel);
-        const msg = messages[index] as HTMLElement | undefined;
-        if (!msg) return { exists: false, text: "", html: "", generating: true };
+      ({ msgSel, bodySel, stopSel, stripSel, doneAttr, seenAttr }) => {
+        const visibility = document.visibilityState;
+        const fresh = Array.from(document.querySelectorAll(msgSel)).filter((el) => !el.hasAttribute(seenAttr));
+        const msg = fresh[fresh.length - 1] as HTMLElement | undefined;
+        if (!msg) return { exists: false, text: "", html: "", generating: true, visibility };
         const body = (bodySel ? (msg.querySelector(bodySel) as HTMLElement | null) : null) ?? msg;
 
-        // Is a generation still running? Stop button visible, or the site's own "streaming" attribute.
-        const stop = stopSel ? (document.querySelector(stopSel) as HTMLElement | null) : null;
-        const stopVisible = !!stop && stop.getClientRects().length > 0;
+        // Is a generation still running? Any stop button visible, or the site's own attribute.
+        // Several candidate selectors can match at once, so check them all, not just the first.
+        // checkVisibility() reads computed styles, so it also works in a background tab where
+        // getClientRects() can report nothing because layout was never run.
+        // Note: only anonymous inline callbacks here - a named function would make esbuild's
+        // keepNames inject a __name helper that does not exist inside the page.
+        const stopVisible = stopSel
+          ? Array.from(document.querySelectorAll(stopSel)).some((el) => {
+              const anyEl = el as Element & { checkVisibility?: () => boolean };
+              return typeof anyEl.checkVisibility === "function"
+                ? anyEl.checkVisibility()
+                : (el as HTMLElement).getClientRects().length > 0;
+            })
+          : false;
         let generating = stopVisible;
         if (doneAttr) {
           const v = msg.getAttribute(doneAttr.attr);
@@ -208,9 +265,11 @@ export abstract class BaseAdapter implements LlmSiteAdapter {
           clone.querySelectorAll(stripSel).forEach((el) => el.remove());
           html = clone.innerHTML;
         }
-        return { exists: true, text: body.innerText ?? "", html, generating };
+        // innerText needs layout, which a background tab may never run; fall back to textContent.
+        const text = body.innerText || body.textContent || "";
+        return { exists: true, text, html, generating, visibility };
       },
-      { msgSel, bodySel, stopSel, stripSel, doneAttr, index },
+      { msgSel, bodySel, stopSel, stripSel, doneAttr, seenAttr: SEEN_ATTR },
     );
   }
 

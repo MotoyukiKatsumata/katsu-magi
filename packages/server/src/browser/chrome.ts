@@ -62,7 +62,14 @@ export async function spawnChrome(opts: {
     `--user-data-dir=${opts.userDataDir}`,
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-features=Translate",
+    // Keep every tab running at full speed. Only one of the three site tabs can be foreground,
+    // and the whole window is usually behind the user's other windows; without these, Chrome
+    // throttles the background renderers and answers arrive far too late (or not at all).
+    // CalculateNativeWinOcclusion is the Windows-specific "this window is covered" detection.
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=Translate,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
     "--disable-blink-features=AutomationControlled",
     `--window-size=${opts.windowSize ?? "1280,900"}`,
     ...(opts.startMinimized ? ["--start-minimized"] : []),

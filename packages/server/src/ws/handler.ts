@@ -23,6 +23,7 @@ export function registerWebSocket(app: FastifyInstance, orch: Orchestrator, log:
     sockets.add(socket);
     log.info({ clients: sockets.size }, "ws client connected");
     send(socket, orch.snapshot());
+    send(socket, orch.listSessions());
 
     socket.on("message", (raw: { toString(): string }) => {
       let msg: ClientMsg;
@@ -65,6 +66,22 @@ export function registerWebSocket(app: FastifyInstance, orch: Orchestrator, log:
         case "browser":
           if (msg.action === "restart") await orch.restartBrowser();
           else await orch.setBrowserVisible(msg.action === "show");
+          return;
+        case "listSessions":
+          send(socket, orch.listSessions());
+          return;
+        case "openSession": {
+          const { session, resumed } = await orch.openSession(msg.id, msg.resume);
+          // Only the requesting client switches what it is looking at; resuming moves the tabs
+          // for everyone, and that is already reflected in the broadcast state message.
+          send(socket, { type: "session", session: session ?? null, resumed });
+          return;
+        }
+        case "deleteSession":
+          broadcast(orch.deleteSession(msg.id));
+          return;
+        case "renameSession":
+          broadcast(orch.renameSession(msg.id, msg.title));
           return;
       }
     } catch (err) {

@@ -78,7 +78,10 @@ export class GenerationWatcher {
           yield { text: lastText, html: lastHtml, done: true, outcome: "done" };
           return;
         }
-      } else if (t - started >= this.t.firstTokenMs) {
+      } else if (!seenMessage && t - started >= this.t.firstTokenMs) {
+        // Only while the site has not even created an answer container. Once one has appeared the
+        // request was accepted, so a long silence is the model thinking, not a failure; from then
+        // on only generationMs bounds the wait.
         throw new FirstTokenTimeoutError();
       }
 
@@ -86,12 +89,6 @@ export class GenerationWatcher {
         // Give up but hand back whatever was captured.
         yield { text: lastText, html: lastHtml, done: true, outcome: "timeout-generation" };
         return;
-      }
-
-      // A message container that exists but stays empty for the whole first-token window is
-      // also treated as "no first token" (some sites render an empty bubble immediately).
-      if (seenMessage && lastText.length === 0 && t - started >= this.t.firstTokenMs) {
-        throw new FirstTokenTimeoutError();
       }
 
       await this.sleep(this.t.pollMs, signal);

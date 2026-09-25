@@ -18,6 +18,8 @@ export interface LlmSiteAdapter {
   attach(page: Page): Promise<void>;
   ensureReady(): Promise<Readiness>;
   newConversation(): Promise<void>;
+  /** Reopen a past conversation by its URL, so follow-up prompts continue it. */
+  openConversation(url: string): Promise<void>;
   send(prompt: string, signal: AbortSignal): AsyncIterable<AnswerChunk>;
   /** Click the site's stop button if a generation is running. */
   cancel(): Promise<void>;
@@ -67,4 +69,6 @@ export interface Reading {
   text: string;
   html: string;
   generating: boolean;
+  /** "visible" or "hidden": a hidden tab that also stops producing text points at throttling. */
+  visibility?: string;
 }

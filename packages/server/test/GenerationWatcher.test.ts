@@ -69,6 +69,30 @@ describe("GenerationWatcher", () => {
     await expect(collect(watcher.run(read, new AbortController().signal))).rejects.toBeInstanceOf(FirstTokenTimeoutError);
   });
 
+  it("keeps waiting past the first-token timeout once a container has appeared", async () => {
+    // The site accepted the prompt and rendered an empty bubble, then thinks for a long time.
+    // That must not be reported as a failure; only the generation timeout bounds the wait.
+    const thinking = { exists: true, text: "", html: "", generating: true };
+    const readings = [
+      ...Array<Partial<Reading>>(30).fill(thinking), // 3000ms with T.firstTokenMs = 1000
+      { exists: true, text: "late answer", html: "<p>late answer</p>", generating: false },
+      { exists: true, text: "late answer", html: "<p>late answer</p>", generating: false },
+      { exists: true, text: "late answer", html: "<p>late answer</p>", generating: false },
+      { exists: true, text: "late answer", html: "<p>late answer</p>", generating: false },
+    ];
+    const { watcher, read } = makeWatcher(readings);
+    const snaps = await collect(watcher.run(read, new AbortController().signal));
+    expect(snaps.at(-1)!.outcome).toBe("done");
+    expect(snaps.at(-1)!.text).toBe("late answer");
+  });
+
+  it("still gives up at the generation timeout when the container stays empty", async () => {
+    const { watcher, read } = makeWatcher([{ exists: true, text: "", html: "", generating: true }]);
+    const snaps = await collect(watcher.run(read, new AbortController().signal));
+    expect(snaps.at(-1)!.outcome).toBe("timeout-generation");
+    expect(snaps.at(-1)!.text).toBe("");
+  });
+
   it("gives up with a partial answer after the generation timeout", async () => {
     let n = 0;
     const read = async (): Promise<Reading> => ({ exists: true, text: "x".repeat(++n), html: "", generating: true });
