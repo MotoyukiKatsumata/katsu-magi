@@ -63,6 +63,31 @@ describe("HistoryStore", () => {
     expect(store.get(s.id)).toBeUndefined();
   });
 
+  // The list is ordered by when a conversation was last used, so retitling must not reorder it.
+  it("renaming leaves the timestamp and the order alone", () => {
+    const older = store.create("older");
+    const newer = store.create("newer");
+    store.appendTurn(newer.id, turn("q", "a"));
+    const before = store.list().map((s) => s.id);
+    const olderTime = store.get(older.id)!.updatedAt;
+
+    store.rename(older.id, "名前を変えた");
+
+    expect(store.get(older.id)!.updatedAt).toBe(olderTime);
+    expect(store.list().map((s) => s.id)).toEqual(before);
+    expect(store.list().find((s) => s.id === older.id)!.title).toBe("名前を変えた");
+  });
+
+  it("appending a turn does move a conversation to the front", () => {
+    const older = store.create("older");
+    const newer = store.create("newer");
+    store.appendTurn(newer.id, turn("q", "a"));
+    expect(store.list()[0]!.id).toBe(newer.id);
+
+    store.appendTurn(older.id, turn("q2", "a2"));
+    expect(store.list()[0]!.id).toBe(older.id);
+  });
+
   it("lists the most recently updated session first", () => {
     const a = store.create("a");
     const b = store.create("b");

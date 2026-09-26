@@ -24,6 +24,9 @@ export function registerWebSocket(app: FastifyInstance, orch: Orchestrator, log:
     log.info({ clients: sockets.size }, "ws client connected");
     send(socket, orch.snapshot());
     send(socket, orch.listSessions());
+    // Show whatever the tabs are already on, so the columns match the sidebar's marker.
+    const current = orch.currentSessionMessage();
+    if (current) send(socket, current);
 
     socket.on("message", (raw: { toString(): string }) => {
       let msg: ClientMsg;
@@ -72,9 +75,9 @@ export function registerWebSocket(app: FastifyInstance, orch: Orchestrator, log:
           return;
         case "openSession": {
           const { session, resumed } = await orch.openSession(msg.id, msg.resume);
-          // Only the requesting client switches what it is looking at; resuming moves the tabs
-          // for everyone, and that is already reflected in the broadcast state message.
-          send(socket, { type: "session", session: session ?? null, resumed });
+          // Viewing is private to the requesting client. A resume moves the tabs for everyone,
+          // and the orchestrator already broadcast the conversation for that case.
+          if (!resumed) send(socket, { type: "session", session: session ?? null, resumed });
           return;
         }
         case "deleteSession":

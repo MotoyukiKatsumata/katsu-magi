@@ -60,7 +60,7 @@ pnpm start            # http://localhost:5175 が開きます
 - 題名はダブルクリックで変更できます。「削除」は katsu-magi の履歴から消すだけで、各サイト側の会話は残ります
 - パネルは「◀ 閉じる」で畳めます。開閉状態は次回も維持されます
 
-サーバーを終了しても、次に起動したときは**最後の会話が自動で再開**されます。切りたいときは「New conversation」を押すか、設定で `history.resumeLastOnStart` を `false` にしてください。
+起動したときは**新しい会話から始まります**。前回の続きを書きたいときは、履歴から選んでそのまま入力してください。起動のたびに前回の会話を再開したい場合は、設定で `history.resumeLastOnStart` を `true` にしてください。
 
 保存先は `%LOCALAPPDATA%\katsu-magi\history\` です。
 

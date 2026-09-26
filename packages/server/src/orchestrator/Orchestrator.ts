@@ -281,6 +281,17 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
   }
 
   /**
+   * The conversation the tabs are on, ready to be shown in the columns.
+   *
+   * A client that connects after the server resumed a conversation (at startup, say) would
+   * otherwise see empty columns while the sidebar marks that conversation as the one on display.
+   */
+  currentSessionMessage(): ServerMsg | undefined {
+    const session = this.sessionId ? this.history?.get(this.sessionId) : undefined;
+    return session ? { type: "session", session, resumed: true } : undefined;
+  }
+
+  /**
    * `resume: false` only returns the stored conversation for viewing.
    * `resume: true` also navigates every site's tab back to that conversation, so the next
    * prompt continues it. Sites with no stored URL fall back to a fresh chat.
@@ -293,6 +304,9 @@ export class Orchestrator extends EventEmitter<{ message: [ServerMsg] }> {
     await this.resumeTabs(session);
     this.sessionId = id;
     this.emit("message", this.snapshot());
+    // Every client follows the tabs, including ones that were not the requester and ones that
+    // connected before the server resumed on its own at startup.
+    this.emit("message", { type: "session", session, resumed: true });
     return { session, resumed: true };
   }
 

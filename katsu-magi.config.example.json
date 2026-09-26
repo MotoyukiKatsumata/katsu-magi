@@ -13,7 +13,7 @@
   },
   "history": {
     "enabled": true,
-    "resumeLastOnStart": true
+    "resumeLastOnStart": false
   },
   "timeouts": {
     "pollMs": 300,

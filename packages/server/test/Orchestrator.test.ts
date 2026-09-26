@@ -253,6 +253,39 @@ describe("Orchestrator", () => {
     expect(err && err.type === "error" && err.code).toBe("SESSION_NOT_FOUND");
   });
 
+  // Regression: the sidebar marked the resumed conversation as shown while the columns stayed
+  // empty, because its contents were never sent.
+  it("resuming broadcasts the conversation so every client can show it", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    gpt.url = "https://chatgpt.com/c/abc";
+    const { orch, history, messages } = setup([gpt]);
+
+    await orch.ask("r1", "もとの話題", ["chatgpt"]);
+    const id = history.list()[0]!.id;
+    await orch.newConversation();
+    messages.length = 0;
+
+    await orch.openSession(id, true);
+
+    const broadcast = messages.find((m) => m.type === "session");
+    expect(broadcast && broadcast.type === "session" && broadcast.resumed).toBe(true);
+    expect(broadcast && broadcast.type === "session" && broadcast.session?.turns[0]?.prompt).toBe("もとの話題");
+  });
+
+  it("offers the current conversation to a client that connects later", async () => {
+    const gpt = new FakeAdapter("chatgpt", () => ok("x"));
+    const { orch, history } = setup([gpt]);
+    expect(orch.currentSessionMessage()).toBeUndefined();
+
+    await orch.ask("r1", "話題", ["chatgpt"]);
+    const msg = orch.currentSessionMessage();
+    expect(msg && msg.type === "session" && msg.session?.id).toBe(history.list()[0]!.id);
+    expect(msg && msg.type === "session" && msg.resumed).toBe(true);
+
+    await orch.newConversation();
+    expect(orch.currentSessionMessage()).toBeUndefined();
+  });
+
   it("opening a session without resuming leaves the tabs alone", async () => {
     const gpt = new FakeAdapter("chatgpt", () => ok("x"));
     gpt.url = "https://chatgpt.com/c/abc";

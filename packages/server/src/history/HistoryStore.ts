@@ -72,10 +72,15 @@ export class HistoryStore {
     });
   }
 
+  /** Retitling is not activity: the list is ordered by when a conversation was last used. */
   rename(id: string, title: string): void {
-    this.mutate(id, (s) => {
-      s.title = title.trim() || s.title;
-    });
+    this.mutate(
+      id,
+      (s) => {
+        s.title = title.trim() || s.title;
+      },
+      { touch: false },
+    );
   }
 
   remove(id: string): void {
@@ -93,14 +98,14 @@ export class HistoryStore {
     return path.join(this.dir, `${id}.json`);
   }
 
-  private mutate(id: string, fn: (s: Session) => void): void {
+  private mutate(id: string, fn: (s: Session) => void, opts: { touch?: boolean } = {}): void {
     const session = this.get(id);
     if (!session) {
       this.log.warn({ id }, "history: session not found");
       return;
     }
     fn(session);
-    session.updatedAt = new Date().toISOString();
+    if (opts.touch !== false) session.updatedAt = new Date().toISOString();
     this.write(session);
   }
 

@@ -61,17 +61,15 @@ export function HistorySidebar({ open, sessions, activeId, viewingId, busy, onTo
           const heading = day !== lastDay ? day : null;
           lastDay = day;
           const isActive = s.id === activeId;
-          const isViewing = s.id === viewingId;
+          // One marker only, on whatever the columns are showing. Which conversation the browser
+          // tabs happen to be on is an internal detail: sending continues the shown one either way.
+          const isShown = s.id === (viewingId ?? activeId);
           return (
             <div key={s.id}>
               {heading && <p className="mt-3 mb-1 px-1 text-[11px] font-medium text-zinc-400">{heading}</p>}
               <div
                 className={`group rounded-lg px-2 py-1.5 ${
-                  isViewing
-                    ? "bg-indigo-100 dark:bg-indigo-950/60"
-                    : isActive
-                      ? "bg-emerald-50 dark:bg-emerald-950/40"
-                      : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                  isShown ? "bg-indigo-100 dark:bg-indigo-950/60" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 }`}
               >
                 {editing === s.id ? (
@@ -80,7 +78,9 @@ export function HistorySidebar({ open, sessions, activeId, viewingId, busy, onTo
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     onBlur={() => {
-                      if (draft.trim()) onRename(s.id, draft.trim());
+                      // Only when it really changed: a no-op rename would still be a write.
+                      const title = draft.trim();
+                      if (title && title !== s.title) onRename(s.id, title);
                       setEditing(null);
                     }}
                     onKeyDown={(e) => {
@@ -90,29 +90,30 @@ export function HistorySidebar({ open, sessions, activeId, viewingId, busy, onTo
                     className="w-full rounded border border-indigo-400 bg-transparent px-1 py-0.5 text-sm outline-none"
                   />
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => onOpen(s.id, false)}
-                    onDoubleClick={() => {
-                      setDraft(s.title);
-                      setEditing(s.id);
-                    }}
-                    title={`${s.title}\nダブルクリックで名前を変更`}
-                    className="block w-full truncate text-left text-sm"
-                  >
+                  <button type="button" onClick={() => onOpen(s.id, false)} title={s.title} className="block w-full truncate text-left text-sm">
                     {s.title}
                   </button>
                 )}
                 <div className="mt-0.5 flex items-center gap-2 text-[11px] text-zinc-400">
                   <span>{timeLabel(s.updatedAt)}</span>
                   <span>{s.turnCount} 往復</span>
-                  {isActive && <span className="text-emerald-600 dark:text-emerald-400">表示中の会話</span>}
+                  {isShown && <span className="text-indigo-600 dark:text-indigo-400">表示中</span>}
                   <span className="ml-auto flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
                     {!isActive && (
                       <button type="button" disabled={busy} onClick={() => onOpen(s.id, true)} className="hover:text-indigo-600 disabled:opacity-40">
                         再開
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft(s.title);
+                        setEditing(s.id);
+                      }}
+                      className="hover:text-indigo-600"
+                    >
+                      名前
+                    </button>
                     <button
                       type="button"
                       onClick={() => {

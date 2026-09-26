@@ -27,8 +27,12 @@ export const configSchema = z.object({
   history: z
     .object({
       enabled: z.boolean().default(true),
-      /** Put the tabs back on the last conversation when the server starts. */
-      resumeLastOnStart: z.boolean().default(true),
+      /**
+       * Put the tabs back on the last conversation when the server starts.
+       * Off by default: a fresh start is the common case, and any past conversation is one
+       * click away in the history sidebar.
+       */
+      resumeLastOnStart: z.boolean().default(false),
     })
     .prefault({}),
   timeouts: z
